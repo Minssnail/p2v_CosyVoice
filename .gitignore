@@ -1,0 +1,38 @@
+# 忽略所有 safetensors 模型文件
+*.safetensors
+
+# 其他常见大文件
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.onnx
+*.pkl
+*.joblib
+
+# 模型目录
+models/
+checkpoints/
+pretrained/
+
+# 资源目录
+outputs/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+ENV/
+
+# 数据文件
+*.wav
+*.mp3
+*.mp4
+*.zip
+*.tar.gz
+*.ppt
+*.pptx
+*.png
