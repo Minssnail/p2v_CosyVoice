@@ -1,8 +1,11 @@
-from flask import Flask, render_template, request, send_from_directory, redirect, url_for
+from flask import Flask, render_template, request, send_from_directory, redirect, url_for, Response, jsonify
 import os
 import uuid
+import threading
+import time
+import json
 # 引入核心引擎
-from ppt2video_engine import run_generation
+from ppt2video_engine import run_generation, get_progress, clear_progress
 
 app = Flask(__name__)
 
@@ -13,12 +16,15 @@ OUTPUT_FOLDER = os.path.join(BASE_DIR, 'static', 'outputs')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+# 存储正在运行的任务 { session_id: { "thread": Thread, "output": filename } }
+_tasks = {}
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        if 'file' not in request.files: return "错误：未上传文件"
+        if 'file' not in request.files: return jsonify({"error": "未上传文件"}), 400
         file = request.files['file']
-        if file.filename == '': return "错误：文件名为空"
+        if file.filename == '': return jsonify({"error": "文件名为空"}), 400
 
         if file:
             session_id = str(uuid.uuid4())[:8]
@@ -27,10 +33,9 @@ def index():
             file.save(upload_path)
 
             selected_voice = request.form.get('voice', 'zh-CN-XiaoxiaoNeural')
-            # 🆕 获取视频模式参数 (默认 'studio')
             video_mode = request.form.get('video_mode', 'studio')
 
-            # 🆕 处理零样本克隆参数
+            # 处理零样本克隆参数
             prompt_wav_path = None
             prompt_text = request.form.get('prompt_text', '')
             if 'prompt_wav' in request.files:
@@ -50,15 +55,44 @@ def index():
 
             print(f"\n🎬 [Web] 任务: {safe_filename} | 模式: {video_mode} | 音色: {selected_voice}")
 
-            # 🆕 将 voice_config 传递给引擎
-            success = run_generation(upload_path, output_video_path, session_id, voice_config, video_mode=video_mode)
+            # 🆕 在后台线程中运行生成任务
+            def _run_task():
+                success = run_generation(upload_path, output_video_path, session_id, voice_config, video_mode=video_mode)
+                _tasks[session_id]["success"] = success
 
-            if success:
-                return redirect(url_for('preview', filename=output_video_name))
-            else:
-                return "❌ 生成失败，请查看后台日志。"
+            t = threading.Thread(target=_run_task, daemon=True)
+            _tasks[session_id] = {"thread": t, "output": output_video_name, "success": None}
+            t.start()
+
+            # 返回 session_id 给前端，用于轮询进度
+            return jsonify({"session_id": session_id})
 
     return render_template('index.html')
+
+
+@app.route('/api/progress/<session_id>')
+def progress_stream(session_id):
+    """SSE 端点：推送实时进度"""
+    def event_stream():
+        while True:
+            prog = get_progress(session_id)
+            task = _tasks.get(session_id, {})
+
+            # 如果任务已完成，附带结果信息
+            if prog.get("done"):
+                if prog.get("success") and task.get("output"):
+                    prog["redirect"] = f"/preview/{task['output']}"
+                yield f"data: {json.dumps(prog, ensure_ascii=False)}\n\n"
+                # 清理
+                clear_progress(session_id)
+                break
+
+            yield f"data: {json.dumps(prog, ensure_ascii=False)}\n\n"
+            time.sleep(0.8)
+
+    return Response(event_stream(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
 
 @app.route('/preview/<filename>')
 def preview(filename):
