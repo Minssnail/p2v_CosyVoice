@@ -8,6 +8,35 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
+        
+        /* 进度条动画 */
+        .progress-bar-fill {
+            transition: width 0.5s ease-in-out;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6);
+            background-size: 200% 100%;
+            animation: shimmer 2s linear infinite;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        
+        /* 阶段图标脉冲 */
+        .stage-active {
+            animation: pulse-blue 1.5s ease-in-out infinite;
+        }
+        @keyframes pulse-blue {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.5); }
+            50% { box-shadow: 0 0 0 10px rgba(59,130,246,0); }
+        }
+
+        /* 打字机效果 */
+        .detail-text {
+            overflow: hidden;
+            white-space: nowrap;
+            animation: typing 0.3s steps(20,end);
+        }
+        @keyframes typing { from { width: 0 } to { width: 100% } }
     </style>
 </head>
 <body class="bg-gray-50 flex flex-col items-center min-h-screen pt-20">
@@ -19,8 +48,8 @@
     </div>
 
     <!-- Main Form Area -->
-    <div class="bg-white p-10 rounded-2xl shadow-lg max-w-2xl w-full mx-4 mb-20">
-        <form action="/" method="post" enctype="multipart/form-data" onsubmit="showLoading()">
+    <div id="form-card" class="bg-white p-10 rounded-2xl shadow-lg max-w-2xl w-full mx-4 mb-20">
+        <form id="main-form" enctype="multipart/form-data">
             
             <!-- 1. 文件上传区域 -->
             <div class="mb-8">
@@ -122,21 +151,66 @@
             </div>
 
             <!-- 提交按钮 -->
-            <button type="submit" class="w-full text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 focus:ring-4 focus:ring-blue-300 font-bold rounded-xl text-lg px-5 py-4 text-center flex justify-center items-center shadow-lg transform transition hover:-translate-y-0.5">
+            <button id="submit-btn" type="submit" class="w-full text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 focus:ring-4 focus:ring-blue-300 font-bold rounded-xl text-lg px-5 py-4 text-center flex justify-center items-center shadow-lg transform transition hover:-translate-y-0.5">
                 <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 立即生成视频
             </button>
         </form>
     </div>
 
-    <!-- Loading Overlay -->
-    <div id="loading" class="fixed inset-0 bg-gray-900 bg-opacity-80 hidden flex-col items-center justify-center z-50 backdrop-blur-sm">
-        <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-500 mb-4"></div>
-        <h2 class="text-white text-2xl font-bold">正在渲染视频...</h2>
-        <p class="text-gray-300 mt-2">正在调用 A40 GPU 算力，请耐心等待</p>
+    <!-- 🆕 进度面板 (初始隐藏) -->
+    <div id="progress-panel" class="fixed inset-0 bg-gray-900 bg-opacity-85 hidden flex-col items-center justify-center z-50 backdrop-blur-sm">
+        <div class="bg-white rounded-3xl shadow-2xl p-10 max-w-lg w-full mx-4">
+            
+            <!-- 标题 -->
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center mx-auto mb-4">
+                    <svg id="progress-icon-spin" class="w-8 h-8 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                    <svg id="progress-icon-done" class="w-8 h-8 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    <svg id="progress-icon-error" class="w-8 h-8 hidden text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </div>
+                <h2 id="progress-title" class="text-2xl font-bold text-gray-900">正在生成视频</h2>
+            </div>
+
+            <!-- 阶段指示器 -->
+            <div class="flex items-center justify-between mb-6 px-2">
+                <div id="stage-parse" class="flex flex-col items-center">
+                    <div class="w-10 h-10 rounded-full bg-gray-200 text-gray-400 flex items-center justify-center text-sm font-bold transition-all duration-300">1</div>
+                    <span class="text-xs text-gray-400 mt-1">解析</span>
+                </div>
+                <div class="flex-1 h-1 bg-gray-200 mx-2 rounded"><div id="line-1" class="h-full bg-blue-500 rounded transition-all duration-500" style="width:0%"></div></div>
+                <div id="stage-tts" class="flex flex-col items-center">
+                    <div class="w-10 h-10 rounded-full bg-gray-200 text-gray-400 flex items-center justify-center text-sm font-bold transition-all duration-300">2</div>
+                    <span class="text-xs text-gray-400 mt-1">合成</span>
+                </div>
+                <div class="flex-1 h-1 bg-gray-200 mx-2 rounded"><div id="line-2" class="h-full bg-blue-500 rounded transition-all duration-500" style="width:0%"></div></div>
+                <div id="stage-render" class="flex flex-col items-center">
+                    <div class="w-10 h-10 rounded-full bg-gray-200 text-gray-400 flex items-center justify-center text-sm font-bold transition-all duration-300">3</div>
+                    <span class="text-xs text-gray-400 mt-1">渲染</span>
+                </div>
+                <div class="flex-1 h-1 bg-gray-200 mx-2 rounded"><div id="line-3" class="h-full bg-blue-500 rounded transition-all duration-500" style="width:0%"></div></div>
+                <div id="stage-merge" class="flex flex-col items-center">
+                    <div class="w-10 h-10 rounded-full bg-gray-200 text-gray-400 flex items-center justify-center text-sm font-bold transition-all duration-300">4</div>
+                    <span class="text-xs text-gray-400 mt-1">合并</span>
+                </div>
+            </div>
+
+            <!-- 进度条 -->
+            <div class="w-full bg-gray-200 rounded-full h-4 mb-4 overflow-hidden">
+                <div id="progress-bar" class="progress-bar-fill h-4 rounded-full" style="width: 0%"></div>
+            </div>
+
+            <!-- 进度详情 -->
+            <p id="progress-detail" class="text-sm text-gray-500 text-center mb-2">准备中...</p>
+            <p id="progress-percent" class="text-center text-2xl font-bold text-blue-600">0%</p>
+        </div>
     </div>
 
     <script>
+        // ─── 文件拖拽 ───
         const dropzone = document.getElementById('dropzone');
         const fileInput = document.getElementById('dropzone-file');
         const fileNameDisplay = document.getElementById('file-name');
@@ -158,22 +232,174 @@
             dropzone.classList.add('border-green-400', 'bg-green-50');
         }
 
+        // ─── Zero-Shot 切换 ───
         function toggleZeroShot(show) {
             const settings = document.getElementById('zero-shot-settings');
-            if (show) {
-                settings.classList.remove('hidden');
+            if (show) { settings.classList.remove('hidden'); }
+            else { settings.classList.add('hidden'); }
+        }
+        document.querySelectorAll('input[name="voice"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                if (e.target.value !== 'zero_shot') { toggleZeroShot(false); }
+            });
+        });
+
+        // ─── 阶段映射 ───
+        const STAGE_ORDER = ['parse', 'tts', 'render', 'merge', 'done'];
+        const STAGE_LABELS = {
+            'init': '初始化', 'parse': '解析PPT', 'tts': '语音合成',
+            'render': '视频渲染', 'merge': '合并输出', 'done': '完成', 'error': '出错'
+        };
+
+        function setStageState(stageId, state) {
+            // state: 'pending' | 'active' | 'done' | 'error'
+            const el = document.querySelector(`#${stageId} > div`);
+            if (!el) return;
+            el.classList.remove('bg-gray-200', 'text-gray-400', 'bg-blue-500', 'text-white',
+                               'bg-green-500', 'bg-red-500', 'stage-active');
+            if (state === 'active') {
+                el.classList.add('bg-blue-500', 'text-white', 'stage-active');
+            } else if (state === 'done') {
+                el.classList.add('bg-green-500', 'text-white');
+                el.innerHTML = '✓';
+            } else if (state === 'error') {
+                el.classList.add('bg-red-500', 'text-white');
+                el.innerHTML = '✗';
             } else {
-                settings.classList.add('hidden');
+                el.classList.add('bg-gray-200', 'text-gray-400');
             }
         }
 
-        // 监听所有 radio 按钮，除 zero_shot 外的都隐藏设置
-        document.querySelectorAll('input[name="voice"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                if (e.target.value !== 'zero_shot') {
-                    toggleZeroShot(false);
+        function updateStageLines(currentStage) {
+            const idx = STAGE_ORDER.indexOf(currentStage);
+            document.getElementById('line-1').style.width = idx >= 1 ? '100%' : '0%';
+            document.getElementById('line-2').style.width = idx >= 2 ? '100%' : '0%';
+            document.getElementById('line-3').style.width = idx >= 3 ? '100%' : '0%';
+        }
+
+        function updateProgressUI(data) {
+            const stage = data.stage;
+            const current = data.current || 0;
+            const total = data.total || 1;
+            const detail = data.detail || '';
+            const done = data.done || false;
+            const success = data.success !== false;
+
+            // 更新详情文字
+            document.getElementById('progress-detail').textContent = detail;
+
+            // 根据阶段计算总体百分比
+            let overallPercent = 0;
+            const stageWeights = { parse: 10, tts: 50, render: 30, merge: 10 };
+
+            if (stage === 'init' || stage === 'waiting') {
+                overallPercent = 0;
+            } else if (stage === 'parse') {
+                overallPercent = total > 0 ? Math.round(10 * current / total) : 5;
+            } else if (stage === 'tts') {
+                overallPercent = 10 + Math.round(50 * current / Math.max(total, 1));
+            } else if (stage === 'render') {
+                overallPercent = 60 + Math.round(30 * current / Math.max(total, 1));
+            } else if (stage === 'merge') {
+                overallPercent = 90 + Math.round(10 * current / Math.max(total, 1));
+            } else if (stage === 'done') {
+                overallPercent = 100;
+            } else if (stage === 'error') {
+                // keep current
+            }
+
+            document.getElementById('progress-bar').style.width = overallPercent + '%';
+            document.getElementById('progress-percent').textContent = overallPercent + '%';
+
+            // 更新阶段指示器
+            const stageIds = ['stage-parse', 'stage-tts', 'stage-render', 'stage-merge'];
+            const stageKeys = ['parse', 'tts', 'render', 'merge'];
+            const currentIdx = stageKeys.indexOf(stage);
+
+            stageKeys.forEach((key, i) => {
+                if (stage === 'error') {
+                    if (i === currentIdx || (currentIdx === -1 && i === 0)) setStageState(stageIds[i], 'error');
+                    else if (i < currentIdx) setStageState(stageIds[i], 'done');
+                    else setStageState(stageIds[i], 'pending');
+                } else if (stage === 'done') {
+                    setStageState(stageIds[i], 'done');
+                } else {
+                    if (i < currentIdx) setStageState(stageIds[i], 'done');
+                    else if (i === currentIdx) setStageState(stageIds[i], 'active');
+                    else setStageState(stageIds[i], 'pending');
                 }
             });
+            updateStageLines(stage);
+
+            // 完成或失败
+            if (done) {
+                document.getElementById('progress-icon-spin').classList.add('hidden');
+                if (success) {
+                    document.getElementById('progress-icon-done').classList.remove('hidden');
+                    document.getElementById('progress-title').textContent = '🎉 视频生成完成！';
+                    document.getElementById('progress-percent').classList.remove('text-blue-600');
+                    document.getElementById('progress-percent').classList.add('text-green-600');
+                    // 2秒后自动跳转
+                    if (data.redirect) {
+                        setTimeout(() => { window.location.href = data.redirect; }, 1500);
+                    }
+                } else {
+                    document.getElementById('progress-icon-error').classList.remove('hidden');
+                    document.getElementById('progress-title').textContent = '❌ 生成失败';
+                    document.getElementById('progress-title').classList.add('text-red-600');
+                    document.getElementById('progress-percent').classList.remove('text-blue-600');
+                    document.getElementById('progress-percent').classList.add('text-red-600');
+                    document.getElementById('progress-bar').style.background = '#ef4444';
+                }
+            }
+        }
+
+        // ─── 表单提交 (AJAX + SSE) ───
+        document.getElementById('main-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const btn = document.getElementById('submit-btn');
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+
+            const formData = new FormData(e.target);
+
+            try {
+                const resp = await fetch('/', { method: 'POST', body: formData });
+                const result = await resp.json();
+
+                if (result.error) {
+                    alert('错误: ' + result.error);
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    return;
+                }
+
+                const sessionId = result.session_id;
+
+                // 显示进度面板
+                document.getElementById('progress-panel').classList.remove('hidden');
+                document.getElementById('progress-panel').classList.add('flex');
+
+                // 开始 SSE 监听
+                const evtSource = new EventSource(`/api/progress/${sessionId}`);
+                evtSource.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    updateProgressUI(data);
+                    if (data.done) {
+                        evtSource.close();
+                    }
+                };
+                evtSource.onerror = () => {
+                    evtSource.close();
+                    updateProgressUI({ stage: 'error', done: true, success: false, detail: '连接中断' });
+                };
+
+            } catch (err) {
+                alert('提交失败: ' + err.message);
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
         });
     </script>
 </body>

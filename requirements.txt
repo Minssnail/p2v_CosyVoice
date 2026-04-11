@@ -1,0 +1,7 @@
+flask
+waitress
+requests
+edge-tts
+python-pptx
+pywin32
+azure-cognitiveservices-speech
