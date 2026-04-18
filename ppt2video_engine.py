@@ -15,6 +15,7 @@ import json
 import requests
 import edge_tts
 import threading
+import time as _time
 from pptx import Presentation 
 
 try:
@@ -27,9 +28,35 @@ except ImportError:
 TTS_PROVIDER = "cosyvoice"  # 默认使用 cosyvoice
 AZURE_SPEECH_KEY = "f9584ff6c39b43ef991a67435fbbb31a"
 AZURE_SPEECH_REGION = "eastus"
-COSYVOICE_API_URL = "http://10.255.1.115:9880"
+# 🆕 多实例自动发现：扫描端口范围，找到所有活跃的 CosyVoice 实例
+COSYVOICE_HOST = "10.255.1.115"
+COSYVOICE_PORT_RANGE = (9880, 9899)  # 扫描端口范围
 
-MAX_TTS_CONCURRENT = 1 # CosyVoice 负载较高，建议设为 1
+def _discover_cosyvoice_instances():
+    """自动探测所有活跃的 CosyVoice API 实例"""
+    import socket
+    alive = []
+    for port in range(COSYVOICE_PORT_RANGE[0], COSYVOICE_PORT_RANGE[1] + 1):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            s.connect((COSYVOICE_HOST, port))
+            s.close()
+            alive.append(f"http://{COSYVOICE_HOST}:{port}")
+        except:
+            pass
+    if not alive:
+        # 回退到默认端口
+        alive = [f"http://{COSYVOICE_HOST}:9880"]
+        print(f"⚠️ [Discovery] 未发现活跃实例，回退到默认端口 9880")
+    else:
+        print(f"🔍 [Discovery] 发现 {len(alive)} 个 CosyVoice 实例: {[u.split(':')[-1] for u in alive]}")
+    return alive
+
+# 启动时首次探测
+COSYVOICE_API_URLS = _discover_cosyvoice_instances()
+MAX_TTS_CONCURRENT = len(COSYVOICE_API_URLS)  # 并发数 = 实例数
+
 MAX_RENDER_CONCURRENT = 8
 
 # 背景图路径
@@ -121,21 +148,56 @@ async def _generate_azure(text, output_file, voice_name):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _sync_task)
 
-async def _generate_cosyvoice(text, output_file, voice_name, prompt_wav=None, prompt_text=""):
+def _register_zero_shot_speaker(session_id, prompt_wav, prompt_text):
+    """在所有 CosyVoice 实例上预注册零样本音色"""
+    speaker_id = f"p2v_{session_id}"
+    success_count = 0
+    for api_url in COSYVOICE_API_URLS:
+        url = f"{api_url}/api/speakers/register"
+        try:
+            with open(prompt_wav, "rb") as f:
+                r = requests.post(url, data={
+                    "speaker_id": speaker_id,
+                    "prompt_text": prompt_text
+                }, files={"prompt_wav": (os.path.basename(prompt_wav), f, "audio/wav")}, timeout=60)
+                r.raise_for_status()
+            success_count += 1
+        except Exception as e:
+            print(f"⚠️ [CosyVoice] 注册到 {api_url} 失败: {e}")
+    if success_count > 0:
+        print(f"✅ [CosyVoice] 音色预注册成功: {speaker_id} → {success_count}/{len(COSYVOICE_API_URLS)} 个实例")
+        return speaker_id
+    else:
+        print(f"⚠️ [CosyVoice] 所有实例注册失败，回退到逐页上传模式")
+        return None
+
+def _unregister_speaker(speaker_id):
+    """清理所有实例上已注册的临时音色"""
+    for api_url in COSYVOICE_API_URLS:
+        try:
+            requests.delete(f"{api_url}/api/speakers/{speaker_id}", timeout=10)
+        except:
+            pass
+
+async def _generate_cosyvoice(text, output_file, voice_name, prompt_wav=None, prompt_text="",
+                               registered_spk_id=None, api_url=None):
     """
     调用 CosyVoice API 生成语音
-    voice_name: 如果是预训练音色，直接传 ID；如果是 'zero_shot'，则使用 prompt_wav
+    - api_url: 指定目标实例的 URL（多实例负载均衡）
     """
-    url = f"{COSYVOICE_API_URL}/api/tts/sft"
+    base_url = api_url or COSYVOICE_API_URLS[0]
+    url = f"{base_url}/api/tts/sft"
     data = {"tts_text": text, "speed": 1.0}
     files = {}
 
-    if voice_name == "zero_shot" and prompt_wav:
-        url = f"{COSYVOICE_API_URL}/api/tts/zero_shot"
+    if registered_spk_id:
+        url = f"{base_url}/api/tts/zero_shot"
+        data["speaker_id"] = registered_spk_id
+    elif voice_name == "zero_shot" and prompt_wav:
+        url = f"{base_url}/api/tts/zero_shot"
         data["prompt_text"] = prompt_text
         files["prompt_wav"] = (os.path.basename(prompt_wav), open(prompt_wav, "rb"), "audio/wav")
     else:
-        # SFT 模式，voice_name 为音色 ID
         data["speaker_id"] = voice_name
 
     def _sync_request():
@@ -146,7 +208,7 @@ async def _generate_cosyvoice(text, output_file, voice_name, prompt_wav=None, pr
                 f.write(r.content)
             return True
         except Exception as e:
-            print(f"❌ [CosyVoice Error] {e}")
+            print(f"❌ [CosyVoice Error] {base_url} → {e}")
             return False
         finally:
             if "prompt_wav" in files:
@@ -155,15 +217,25 @@ async def _generate_cosyvoice(text, output_file, voice_name, prompt_wav=None, pr
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _sync_request)
 
-async def text_to_speech_wrapper(text, output_file, semaphore, voice_name, prompt_wav=None, prompt_text=""):
+async def text_to_speech_wrapper(text, output_file, semaphore, voice_name,
+                                  prompt_wav=None, prompt_text="",
+                                  registered_spk_id=None, api_url=None):
     async with semaphore:
         if not text.strip(): return True
+        t0 = _time.time()
         if TTS_PROVIDER == "cosyvoice":
-            return await _generate_cosyvoice(text, output_file, voice_name, prompt_wav, prompt_text)
+            result = await _generate_cosyvoice(text, output_file, voice_name,
+                                               prompt_wav, prompt_text,
+                                               registered_spk_id, api_url)
         elif TTS_PROVIDER == "azure":
-            return await _generate_azure(text, output_file, voice_name)
+            result = await _generate_azure(text, output_file, voice_name)
         else:
-            return await _generate_edge(text, output_file, voice_name)
+            result = await _generate_edge(text, output_file, voice_name)
+        elapsed = _time.time() - t0
+        server_tag = api_url.split(':')[-1] if api_url else ''
+        status = "✅" if result else "❌"
+        print(f"  {status} [TTS] {os.path.basename(output_file)} | {elapsed:.1f}s | {len(text)}字 | :{server_tag}")
+        return result
 
 async def create_silent_audio(duration, output_path):
     if os.path.exists(output_path): return
@@ -242,7 +314,13 @@ async def render_slide_video(img_path, audio_path, output_video_path, video_mode
 
 # --- 主任务 (带进度回调) ---
 async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name, video_mode, session_id):
+    global COSYVOICE_API_URLS, MAX_TTS_CONCURRENT
     total_slides = 0
+
+    # 🔄 每次任务开始时重新探测实例（动态扩缩容）
+    COSYVOICE_API_URLS = _discover_cosyvoice_instances()
+    MAX_TTS_CONCURRENT = len(COSYVOICE_API_URLS)
+
 
     # ── 阶段 1：解析 PPT ──
     update_progress(session_id, "parse", 0, 0, "正在解析 PPT 提取幻灯片...")
@@ -261,7 +339,14 @@ async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name,
     prompt_text = voice_name.get("prompt_text", "") if isinstance(voice_name, dict) else ""
     real_voice_name = voice_name.get("voice_name", "中文女") if isinstance(voice_name, dict) else voice_name
 
-    print(f"🚀 [Engine] 开始处理 | 模式: {video_mode} | 音色: {real_voice_name}")
+    # 🚀 预注册零样本音色（一次提取特征，后续所有页复用）
+    registered_spk_id = None
+    if real_voice_name == "zero_shot" and prompt_wav:
+        update_progress(session_id, "parse", 0, 0, "正在预注册教师音色...")
+        registered_spk_id = _register_zero_shot_speaker(session_id, prompt_wav, prompt_text)
+
+    print(f"🚀 [Engine] 开始处理 | 模式: {video_mode} | 音色: {real_voice_name}" +
+          (f" | 预注册: {registered_spk_id}" if registered_spk_id else ""))
 
     for i, slide in enumerate(prs.slides):
         idx = i + 1
@@ -278,23 +363,54 @@ async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name,
 
     # ── 阶段 2：语音合成 ──
     tts_done = 0
-    for i, d in enumerate(slides_data):
-        if not d["notes"]:
-            tts_done += 1
-            continue
-        update_progress(session_id, "tts", tts_done, total_slides,
-                        f"正在合成第 {i+1}/{total_slides} 页语音...")
-        result = await text_to_speech_wrapper(
-            d["notes"], d["aud"], tts_semaphore,
-            real_voice_name, prompt_wav, prompt_text
-        )
-        if not result:
+    tts_total_start = _time.time()
+    num_servers = len(COSYVOICE_API_URLS)
+
+    # 收集需要合成的页面
+    tts_items = [(i, d) for i, d in enumerate(slides_data) if d["notes"]]
+    tts_need = len(tts_items)
+
+    if tts_items:
+        update_progress(session_id, "tts", 0, total_slides,
+                        f"正在合成语音，共 {tts_need} 页...")
+
+        tts_failed = []  # 记录失败的页
+
+        async def _do_tts(idx, d, server_idx):
+            nonlocal tts_done
+            api_url = COSYVOICE_API_URLS[server_idx % num_servers]
+            result = await text_to_speech_wrapper(
+                d["notes"], d["aud"], tts_semaphore,
+                real_voice_name, prompt_wav, prompt_text,
+                registered_spk_id=registered_spk_id,
+                api_url=api_url
+            )
+            if result:
+                tts_done += 1
+                update_progress(session_id, "tts", tts_done, total_slides,
+                                f"已完成 {tts_done}/{tts_need} 页语音合成")
+            else:
+                tts_failed.append(idx + 1)
+            return result
+
+        # 并行合成，每完成一页就更新进度
+        tts_coros = [_do_tts(idx, d, i) for i, (idx, d) in enumerate(tts_items)]
+        await asyncio.gather(*tts_coros)
+
+        if tts_failed:
             update_progress(session_id, "error", done=True, success=False,
-                            detail=f"第 {i+1} 页语音合成失败")
+                            detail=f"第 {tts_failed[0]} 页语音合成失败")
+            if registered_spk_id: _unregister_speaker(registered_spk_id)
             return False
-        tts_done += 1
-        update_progress(session_id, "tts", tts_done, total_slides,
-                        f"已完成 {tts_done}/{total_slides} 页语音合成")
+
+        update_progress(session_id, "tts", total_slides, total_slides,
+                        f"全部 {tts_need} 页语音合成完成")
+    else:
+        tts_done = total_slides
+
+
+    tts_total_elapsed = _time.time() - tts_total_start
+    print(f"⏱️ [TTS 总耗时] {tts_total_elapsed:.1f}s | {len(tts_items)} 页 | {num_servers} 实例并行 | 平均 {tts_total_elapsed/max(len(tts_items),1):.1f}s/页")
 
     # ── 阶段 3：视频渲染 ──
     render_done = 0
@@ -325,6 +441,8 @@ async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name,
 
     subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_video_path])
     cleanup_folder(temp_dir)
+    # 清理预注册的临时音色
+    if registered_spk_id: _unregister_speaker(registered_spk_id)
     print(f"✅ 完成: {output_video_path}")
 
     update_progress(session_id, "done", 1, 1, "视频生成完成！", done=True, success=True)
