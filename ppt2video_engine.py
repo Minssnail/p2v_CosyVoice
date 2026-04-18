@@ -339,14 +339,16 @@ async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name,
     prompt_text = voice_name.get("prompt_text", "") if isinstance(voice_name, dict) else ""
     real_voice_name = voice_name.get("voice_name", "中文女") if isinstance(voice_name, dict) else voice_name
 
-    # 🚀 预注册零样本音色（一次提取特征，后续所有页复用）
-    registered_spk_id = None
-    if real_voice_name == "zero_shot" and prompt_wav:
+    # 🆕 检查是否使用已保存的用户音色（无需重新注册）
+    registered_spk_id = voice_name.get("registered_speaker_id") if isinstance(voice_name, dict) else None
+
+    if not registered_spk_id and real_voice_name == "zero_shot" and prompt_wav:
+        # 临时克隆模式：需要预注册
         update_progress(session_id, "parse", 0, 0, "正在预注册教师音色...")
         registered_spk_id = _register_zero_shot_speaker(session_id, prompt_wav, prompt_text)
 
     print(f"🚀 [Engine] 开始处理 | 模式: {video_mode} | 音色: {real_voice_name}" +
-          (f" | 预注册: {registered_spk_id}" if registered_spk_id else ""))
+          (f" | speaker_id: {registered_spk_id}" if registered_spk_id else ""))
 
     for i, slide in enumerate(prs.slides):
         idx = i + 1
@@ -441,8 +443,9 @@ async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name,
 
     subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_video_path])
     cleanup_folder(temp_dir)
-    # 清理预注册的临时音色
-    if registered_spk_id: _unregister_speaker(registered_spk_id)
+    # 只清理临时音色（p2v_ 前缀），不清理用户已保存的音色（u 前缀）
+    if registered_spk_id and registered_spk_id.startswith("p2v_"):
+        _unregister_speaker(registered_spk_id)
     print(f"✅ 完成: {output_video_path}")
 
     update_progress(session_id, "done", 1, 1, "视频生成完成！", done=True, success=True)
