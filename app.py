@@ -6,10 +6,18 @@ import threading
 import time
 import json
 import requests
+import subprocess
 
 # 引入核心引擎
-from ppt2video_engine import run_generation, get_progress, clear_progress, COSYVOICE_API_URLS
+from ppt2video_engine import run_generation, get_progress, clear_progress, _discover_cosyvoice_instances_tcp_only
 import db
+
+def _get_live_instances():
+    """获取当前活跃的 CosyVoice 实例（同步版本，用于音色管理）"""
+    urls = _discover_cosyvoice_instances_tcp_only()
+    if not urls:
+        print("[WARN] 未发现任何 CosyVoice 实例")
+    return urls
 
 app = Flask(__name__)
 app.secret_key = 'SECRET_KEY_REMOVED'  # 固定密钥，重启不丢失 session
@@ -23,6 +31,59 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # 存储正在运行的任务
 _tasks = {}
+
+
+# ─── 音频处理工具 ───
+
+def convert_to_wav(input_path, output_path=None):
+    """
+    将音频文件转换为WAV格式（CosyVoice要求）
+    支持: m4a, mp3, ogg, etc. → WAV (16kHz, mono)
+    """
+    if output_path is None:
+        base, ext = os.path.splitext(input_path)
+        # 始终用不同文件名，避免 FFmpeg "Output same as Input" 错误
+        output_path = f"{base}_std.wav"
+
+    # 如果已经是WAV，检查格式
+    if input_path.lower().endswith('.wav'):
+        # 验证是否为标准格式
+        try:
+            probe_cmd = ["ffprobe", "-v", "error", "-show_entries",
+                        "stream=codec_name,sample_rate,channels",
+                        "-of", "json", input_path]
+            result = subprocess.run(probe_cmd, capture_output=True, text=True, encoding="utf-8", timeout=5)
+            if result.returncode == 0:
+                import json
+                info = json.loads(result.stdout)
+                if info.get('streams'):
+                    stream = info['streams'][0]
+                    # 如果已经是16kHz单声道WAV，直接返回
+                    if (stream.get('codec_name') == 'pcm_s16le' and
+                        stream.get('sample_rate') == '16000' and
+                        stream.get('channels') == 1):
+                        return input_path
+        except:
+            pass
+
+    # 执行格式转换
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", input_path,
+            "-ar", "16000",           # 采样率 16kHz
+            "-ac", "1",                # 单声道
+            "-c:a", "pcm_s16le",       # PCM 16-bit
+            output_path
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+        return output_path
+    except subprocess.TimeoutExpired:
+        raise ValueError("音频转换超时，请尝试更短的音频")
+    except subprocess.CalledProcessError as e:
+        raise ValueError(f"音频转换失败: {e.stderr.decode('utf-8') if e.stderr else '未知错误'}")
+    except Exception as e:
+        raise ValueError(f"音频处理错误: {str(e)}")
 
 
 # ─── 登录装饰器 ───
@@ -113,33 +174,89 @@ def create_voice():
     user_id = session['user_id']
     speaker_id = db.make_speaker_id(user_id, voice_name)
 
-    # 保存 prompt_wav 到 uploads
-    prompt_path = os.path.join(UPLOAD_FOLDER, f"voice_{speaker_id}_{prompt_file.filename}")
-    prompt_file.save(prompt_path)
+    # 保存原始上传文件
+    temp_path = os.path.join(UPLOAD_FOLDER, f"voice_{speaker_id}_orig{os.path.splitext(prompt_file.filename)[1]}")
+    prompt_file.save(temp_path)
+
+    # 转换为标准WAV格式（CosyVoice要求）
+    try:
+        prompt_path = convert_to_wav(temp_path)
+        print(f"[CONVERT] [Audio] 音频已转换: {os.path.basename(temp_path)} → {os.path.basename(prompt_path)}")
+    except ValueError as e:
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return jsonify({"error": f"音频处理失败: {str(e)}"}), 500
+
+    # 清理原始文件（如果转换后产生新文件）
+    if prompt_path != temp_path and os.path.exists(temp_path):
+        os.remove(temp_path)
 
     # 注册到所有 CosyVoice 实例
     success_count = 0
-    for api_url in COSYVOICE_API_URLS:
+    errors = []
+    live_urls = _get_live_instances()
+    if not live_urls:
+        if os.path.exists(prompt_path): os.remove(prompt_path)
+        return jsonify({"error": "音色注册失败：未发现任何 CosyVoice 实例，请确认语音服务已启动"}), 500
+    for api_url in live_urls:
         try:
             with open(prompt_path, 'rb') as f:
+                # 1. 增加超时时间：60秒 → 120秒
                 r = requests.post(
                     f"{api_url}/api/speakers/register",
                     data={"speaker_id": speaker_id, "prompt_text": prompt_text},
                     files={"prompt_wav": (os.path.basename(prompt_path), f, "audio/wav")},
-                    timeout=60
+                    timeout=120
                 )
                 r.raise_for_status()
             success_count += 1
+            print(f"[OK] [Voice] 成功注册到 {api_url}")
+        except requests.exceptions.Timeout:
+            err = f"{api_url} 请求超时（可能音频文件过大）"
+            errors.append(err)
+            print(f"[TIMEOUT] [Voice] {err}")
+        except requests.exceptions.ConnectionError as e:
+            err = f"{api_url} 连接失败"
+            errors.append(err)
+            print(f"[ERROR] [Voice] {err}: {str(e)[:100]}")
+        except requests.exceptions.HTTPError as e:
+            err = f"{api_url} 返回错误: {e.response.status_code}"
+            errors.append(err)
+            print(f"[HTTP_ERROR] [Voice] {err} - {e.response.text[:200]}")
         except Exception as e:
-            print(f"⚠️ [Voice] 注册到 {api_url} 失败: {e}")
+            err = f"{api_url} 未知错误"
+            errors.append(err)
+            print(f"[ERROR] [Voice] {err}: {str(e)[:100]}")
 
     if success_count == 0:
-        return jsonify({"error": "音色注册失败，语音服务不可用"}), 500
+        # 清理已转换的WAV文件
+        if os.path.exists(prompt_path):
+            os.remove(prompt_path)
+        error_msg = f"音色注册失败，语音服务不可用。\n详情: {'; '.join(errors)}"
+        return jsonify({"error": error_msg}), 500
+
+    # ✅ 保存标准WAV文件用于未来重注册（归档）
+    archived_wav_path = os.path.join(UPLOAD_FOLDER, f"voice_{speaker_id}_std.wav")
+    try:
+        import shutil
+        shutil.copy2(prompt_path, archived_wav_path)
+        print(f"[ARCHIVE] 标准WAV已归档: {os.path.basename(archived_wav_path)}")
+    except Exception as e:
+        print(f"[WARN] 归档标准WAV失败: {e}")
+
+    # 清理临时转换文件
+    if prompt_path != temp_path and os.path.exists(prompt_path):
+        os.remove(prompt_path)
 
     # 写数据库
     try:
         voice = db.add_voice(user_id, voice_name, speaker_id, prompt_text)
-        print(f"✅ [Voice] 用户 {user_id} 创建音色: {voice_name} → {speaker_id} ({success_count} 实例)")
+        print(f"[OK] [Voice] 用户 {user_id} 创建音色: {voice_name} → {speaker_id} ({success_count} 实例)")
         return jsonify({"message": f"音色「{voice_name}」创建成功", "voice": voice})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -158,13 +275,13 @@ def delete_voice():
         return jsonify({"error": "音色不存在或无权删除"}), 404
 
     # 从所有 CosyVoice 实例删除
-    for api_url in COSYVOICE_API_URLS:
+    for api_url in _get_live_instances():
         try:
             requests.delete(f"{api_url}/api/speakers/{speaker_id}", timeout=10)
         except:
             pass
 
-    print(f"🗑️ [Voice] 用户 {session['user_id']} 删除音色: {speaker_id}")
+    print(f"[DELETE] [Voice] 用户 {session['user_id']} 删除音色: {speaker_id}")
     return jsonify({"message": "已删除"})
 
 
@@ -227,7 +344,7 @@ def index():
             output_video_name = f"{session_id}_output.mp4"
             output_video_path = os.path.join(OUTPUT_FOLDER, output_video_name)
 
-            print(f"\n🎬 [Web] 用户: {session.get('display_name')} | 任务: {safe_filename} | 音色: {selected_voice}")
+            print(f"\n[VIDEO] [Web] 用户: {session.get('display_name')} | 任务: {safe_filename} | 音色: {selected_voice}")
 
             def _run_task():
                 success = run_generation(upload_path, output_video_path, session_id, voice_config, video_mode=video_mode)
@@ -278,5 +395,5 @@ def download(filename):
     return send_from_directory(OUTPUT_FOLDER, filename, as_attachment=True)
 
 if __name__ == '__main__':
-    print("🚀 服务启动: https://YOUR_WEB_SERVER_IP:5001")
-    app.run(host='0.0.0.0', port=5001, ssl_context='adhoc', debug=True)
+    print("[START] 服务启动: http://YOUR_SERVER_IP:5001")
+    app.run(host='0.0.0.0', port=5001, debug=True)

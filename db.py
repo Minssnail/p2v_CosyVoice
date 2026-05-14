@@ -113,12 +113,27 @@ def add_voice(user_id: int, voice_name: str, cosyvoice_speaker_id: str, prompt_t
 
 
 def get_user_voices(user_id: int) -> list[dict]:
+    import os
+    # 修复路径计算：db.py在项目根目录下，不需要两次dirname
+    UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
+
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM user_voices WHERE user_id=? ORDER BY created_at DESC", (user_id,)
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    voices = []
+    for r in rows:
+        voice = dict(r)
+        # 添加归档WAV文件路径（如果存在）
+        speaker_id = voice['cosyvoice_speaker_id']
+        archived_wav = os.path.join(UPLOAD_FOLDER, f"voice_{speaker_id}_std.wav")
+        if os.path.exists(archived_wav):
+            voice['prompt_wav'] = archived_wav
+        voices.append(voice)
+
+    return voices
 
 
 def delete_voice(user_id: int, voice_id: int) -> str | None:
