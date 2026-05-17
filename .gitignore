@@ -1,6 +1,9 @@
 # 本地敏感配置（包含 API Key、内网 IP 等）
 config_local.py
 
+# 用户数据库（包含用户凭据，不可公开）
+data/p2v.db
+
 # 忽略所有 safetensors 模型文件
 *.safetensors
 
