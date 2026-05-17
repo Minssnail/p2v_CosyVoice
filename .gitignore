@@ -4,6 +4,27 @@ config_local.py
 # 用户数据库（包含用户凭据，不可公开）
 data/p2v.db
 
+# 测试与调试脚本
+test_*.py
+test_*.bat
+test_*.sh
+check_and_fix_audio.py
+generate_missing_audio.py
+extract_notes_and_generate.py
+render_all_videos.py
+diagnose_performance.py
+
+# 内部开发文档
+VOICE_REGISTRATION_FIX.md
+COSYVOICE_TIMEOUT_IMPROVEMENTS.md
+ajax_analysis.md
+
+# IDE 配置
+.claude/
+
+# 用户上传文件
+static/uploads/
+
 # 忽略所有 safetensors 模型文件
 *.safetensors
 
