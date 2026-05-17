@@ -64,4 +64,5 @@ ENV/
 *.pptx
 *.png
 !docs/*.png
+!static/assets/*.png
 *.txt
