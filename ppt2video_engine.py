@@ -26,15 +26,17 @@ except ImportError:
 
 # ================= ⚙️ 引擎配置 =================
 TTS_PROVIDER = "cosyvoice"  # 默认使用 cosyvoice
-AZURE_SPEECH_KEY = "AZURE_KEY_REMOVED"
-AZURE_SPEECH_REGION = "eastus"
 
-# CosyVoice 多服务器、多实例配置
-# 支持多台服务器，每台服务器可运行多个实例
-COSYVOICE_SERVERS = [
-    {"host": "YOUR_SERVER_IP", "port_range": (9880, 9888)},  # 服务器1：9个实例 (A40安全上限)
-    # {"host": "YOUR_SERVER_IP_2", "port_range": (50050, 50055)},  # 服务器2：6个实例 (2026-04-19测试：TTS推理故障，全部返回500错误)
-]
+# 从本地配置文件读取敏感信息（config_local.py 不纳入版本控制）
+try:
+    from config_local import AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, COSYVOICE_SERVERS
+except ImportError:
+    print("[WARN] 未找到 config_local.py，请从 config_local.example.py 复制并填写实际配置")
+    AZURE_SPEECH_KEY = ""
+    AZURE_SPEECH_REGION = "eastus"
+    COSYVOICE_SERVERS = [
+        {"host": "YOUR_GPU_SERVER_IP", "port_range": (9880, 9888)},
+    ]
 
 # 自动发现所有可用实例（跨多台服务器）
 async def _discover_cosyvoice_instances():

@@ -100,16 +100,25 @@ pip install -r requirements.txt
 python api_server.py --port 9880
 ```
 
-### 4. 配置服务器地址
+### 4. 配置本地环境
 
-编辑 `ppt2video_engine.py` 中的 CosyVoice 服务器配置：
+复制配置模板并填写实际值：
+
+```bash
+cp config_local.example.py config_local.py
+```
+
+编辑 `config_local.py`，填入你的服务器地址和密钥：
 
 ```python
+FLASK_SECRET_KEY = "你的随机密钥"
+
 COSYVOICE_SERVERS = [
     {"host": "你的GPU服务器IP", "port_range": (9880, 9888)},
-    # 可添加多台服务器
 ]
 ```
+
+> ⚠️ `config_local.py` 包含敏感信息，已在 `.gitignore` 中排除，不会被提交。
 
 ### 5. 启动服务
 
@@ -160,10 +169,11 @@ python run.py
 | 参数 | 文件 | 默认值 | 说明 |
 |------|------|--------|------|
 | `TTS_PROVIDER` | ppt2video_engine.py | `"cosyvoice"` | TTS 引擎（cosyvoice / azure / edge） |
-| `COSYVOICE_SERVERS` | ppt2video_engine.py | `[{"host": "...", ...}]` | CosyVoice 服务器列表 |
+| `COSYVOICE_SERVERS` | config_local.py | `[{"host": "..."}]` | CosyVoice 服务器列表 |
+| `FLASK_SECRET_KEY` | config_local.py | — | Flask Session 密钥 |
+| `AZURE_SPEECH_KEY` | config_local.py | `""` | Azure TTS 密钥（备选，可留空） |
 | `MAX_RENDER_CONCURRENT` | ppt2video_engine.py | `8` | 视频渲染最大并发数 |
 | `BACKGROUND_IMAGE_PATH` | ppt2video_engine.py | `static/assets/bg_tech.png` | 演播室模式背景图 |
-| `app.secret_key` | app.py | `'p2v_cosyvoice_...'` | Flask Session 密钥 |
 
 ### 视频模式
 
@@ -198,6 +208,8 @@ p2v_CosyVoice/
 ├── ppt2video_engine.py       # 异步核心引擎 (PPT解析、TTS、渲染、合并)
 ├── db.py                     # SQLite 数据库层 (用户、音色)
 ├── run.py                    # 生产环境启动脚本 (Waitress WSGI)
+├── config_local.example.py   # 本地配置模板（需复制为 config_local.py）
+├── config_local.py           # ⚠️ 本地敏感配置（已 gitignore，不开源）
 ├── requirements.txt          # Python 依赖
 │
 ├── templates/

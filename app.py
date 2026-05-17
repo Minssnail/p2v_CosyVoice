@@ -20,7 +20,13 @@ def _get_live_instances():
     return urls
 
 app = Flask(__name__)
-app.secret_key = 'SECRET_KEY_REMOVED'  # 固定密钥，重启不丢失 session
+# 从本地配置读取密钥（config_local.py 不纳入版本控制）
+try:
+    from config_local import FLASK_SECRET_KEY
+    app.secret_key = FLASK_SECRET_KEY
+except ImportError:
+    app.secret_key = os.urandom(24).hex()
+    print("[WARN] 未找到 config_local.py，使用随机 secret_key（重启后 session 会失效）")
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
@@ -431,5 +437,5 @@ def download(filename):
     return send_from_directory(OUTPUT_FOLDER, filename, as_attachment=True)
 
 if __name__ == '__main__':
-    print("[START] 服务启动: http://YOUR_SERVER_IP:5001")
+    print("[START] 服务启动: http://0.0.0.0:5001")
     app.run(host='0.0.0.0', port=5001, debug=True)
