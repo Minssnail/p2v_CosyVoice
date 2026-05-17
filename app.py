@@ -143,6 +143,42 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/api/account/delete', methods=['POST'])
+@login_required
+def delete_account():
+    """注销账号：验证密码后删除用户及其所有音色数据"""
+    password = request.form.get('password', '')
+    if not password:
+        return jsonify({"error": "请输入密码以确认注销"}), 400
+
+    user_id = session['user_id']
+    result = db.delete_user(user_id, password)
+    if not result:
+        return jsonify({"error": "密码错误，注销失败"}), 403
+
+    # 清理 CosyVoice 实例上的音色
+    speaker_ids = result.get('speaker_ids', [])
+    live_urls = _get_live_instances()
+    for speaker_id in speaker_ids:
+        for api_url in live_urls:
+            try:
+                requests.delete(f"{api_url}/api/speakers/{speaker_id}", timeout=10)
+            except:
+                pass
+        # 清理归档的音频文件
+        for suffix in ['_std.wav', '_orig.wav', '_orig.mp3', '_orig.m4a']:
+            fpath = os.path.join(UPLOAD_FOLDER, f"voice_{speaker_id}{suffix}")
+            if os.path.exists(fpath):
+                os.remove(fpath)
+
+    username = result['user']['username']
+    print(f"[DELETE] [Account] 用户 {username} (ID:{user_id}) 已注销，清理了 {len(speaker_ids)} 个音色")
+
+    # 清除 session
+    session.clear()
+    return jsonify({"message": "账号已注销"})
+
+
 # ─── 音色管理 API ───
 
 @app.route('/api/voices', methods=['GET'])

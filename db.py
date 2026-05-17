@@ -164,5 +164,35 @@ def get_voice_by_speaker_id(user_id: int, cosyvoice_speaker_id: str) -> dict | N
     return dict(row) if row else None
 
 
+def delete_user(user_id: int, password: str) -> dict | None:
+    """
+    注销用户账号：验证密码后删除用户及其所有音色
+    - 返回 {"user": user_dict, "speaker_ids": [...]} 用于后续清理
+    - 密码错误返回 None
+    """
+    conn = _get_conn()
+    # 1. 验证密码
+    user = conn.execute(
+        "SELECT * FROM users WHERE id=? AND password_hash=?",
+        (user_id, _hash_pw(password))
+    ).fetchone()
+    if not user:
+        conn.close()
+        return None
+
+    # 2. 获取该用户所有音色的 speaker_id（用于清理 CosyVoice 实例和文件）
+    voices = conn.execute(
+        "SELECT cosyvoice_speaker_id FROM user_voices WHERE user_id=?", (user_id,)
+    ).fetchall()
+    speaker_ids = [v['cosyvoice_speaker_id'] for v in voices]
+
+    # 3. 删除用户（ON DELETE CASCADE 会自动删除 user_voices）
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    return {"user": dict(user), "speaker_ids": speaker_ids}
+
+
 # 启动时自动建表
 init_db()
