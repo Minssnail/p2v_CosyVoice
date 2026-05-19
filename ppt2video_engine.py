@@ -685,7 +685,14 @@ async def text_to_speech_wrapper(text, output_file, semaphore, voice_name,
     async with semaphore:
         if not text.strip(): return True
         t0 = _time.time()
-        if TTS_PROVIDER == "cosyvoice":
+
+        # 🔧 自动检测音色类型：Neural 格式音色（Edge TTS）不走 CosyVoice
+        is_neural_voice = isinstance(voice_name, str) and "Neural" in voice_name
+
+        if is_neural_voice:
+            # Edge TTS 格式（如 zh-CN-XiaoxiaoNeural）→ 走 Edge TTS
+            result = await _generate_edge(text, output_file, voice_name)
+        elif TTS_PROVIDER == "cosyvoice":
             result = await _generate_cosyvoice(text, output_file, voice_name,
                                                prompt_wav, prompt_text,
                                                registered_spk_id, api_url, page_num, api_urls)
@@ -913,7 +920,17 @@ async def generate_video_task(ppt_path, output_video_path, temp_dir, voice_name,
                 rotated_urls = [COSYVOICE_API_URLS[primary_idx]] + \
                                [COSYVOICE_API_URLS[i] for i in range(list_len) if i != primary_idx]
 
-                # 🔧 故障转移：遍历轮询好的实例队列
+                # 🔧 Neural 音色（Edge TTS）直接走 Edge TTS，不走 CosyVoice
+                is_neural = isinstance(real_voice_name, str) and "Neural" in real_voice_name
+                if is_neural:
+                    print(f"[SEND] {seg_page_info} -> Edge TTS ({real_voice_name})")
+                    result = await _generate_edge(seg_text, seg_file, real_voice_name)
+                    if result:
+                        return page_idx, page_num, seg_idx, seg_file, True
+                    print(f"[FAIL] {seg_page_info} Edge TTS 失败")
+                    return page_idx, page_num, seg_idx, seg_file, False
+
+                # 🔧 故障转移：遍历轮询好的实例队列（CosyVoice 路径）
                 for attempt_idx, api_url in enumerate(rotated_urls):
                     try:
                         if attempt_idx == 0:
