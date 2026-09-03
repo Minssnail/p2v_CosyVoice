@@ -1,5 +1,28 @@
-# 本地敏感配置（包含 API Key、内网 IP 等）
+# ─────────────────────────────────────────────────────────────
+# 密钥 / 凭据 —— 以下任何一项泄漏都会导致账号被盗刷，切勿放开
+# ─────────────────────────────────────────────────────────────
+# 本地敏感配置（HeyGen API Key、DashScope Key、Azure Key、内网 IP）
 config_local.py
+
+# 临时/草稿脚本：历史上多次出现过硬编码的真实 API Key，整体排除
+scratch/
+scratch_*.py
+scratch_*.wav
+
+# HeyGen OAuth token（等同于账号凭据）
+test/heygen_token.json
+test/heygen_oauth_token.json
+test/heygen_pkce.json
+test/heygen_client_info.json
+test/heygen_auth_url.txt
+test/oauth_url.txt
+
+# 兜底：任何以 secret/credential/apikey 命名的文件
+*secret*.py
+*secret*.json
+*credential*.json
+*apikey*
+cookies.txt
 
 # 用户数据库（包含用户凭据，不可公开）
 data/p2v.db
@@ -66,3 +89,11 @@ ENV/
 !docs/*.png
 !static/assets/*.png
 *.txt
+
+# HeyGen 数字人服务 (9892) 运行产物与凭据
+heygen_work/
+heygen_avatars.json
+heygen_quota.json
+heygen_quota_mock_backup_*.json
+test/heygen_token.json
+heygen_avatars_mcp_account_backup.json
