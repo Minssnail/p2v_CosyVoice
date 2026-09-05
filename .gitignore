@@ -97,3 +97,7 @@ heygen_quota.json
 heygen_quota_mock_backup_*.json
 test/heygen_token.json
 heygen_avatars_mcp_account_backup.json
+
+heygen_pending.json
+
+static/outputs/recompose/
